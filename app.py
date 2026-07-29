@@ -7,11 +7,10 @@ import sys
 from pathlib import Path
 
 import customtkinter as ctk
-import keyboard
 
 from core.automation import AutomationController, AutomationSettings
-from core.config import APP_NAME, EXPEDITIONS, PALWORLD_WINDOW_TITLE, TIMEZONE_PRESETS
-from core.window import is_game_foreground
+from core.config import APP_NAME, EXPEDITIONS, TIMEZONE_PRESETS
+from core.hotkeys import GlobalHotkeys
 
 
 def _is_admin() -> bool:
@@ -29,7 +28,6 @@ def _relaunch_as_admin() -> None:
         executable = sys.executable
         script = str(Path(__file__).resolve())
         params = " ".join([f'\"{script}\"', *[f'\"{arg}\"' for arg in sys.argv[1:]]])
-
     result = ctypes.windll.shell32.ShellExecuteW(None, "runas", executable, params, os.getcwd(), 1)
     if result <= 32:
         raise RuntimeError("Windows отклонила запуск с правами администратора.")
@@ -43,7 +41,6 @@ class ExpeditionAssistantApp(ctk.CTk):
         self.geometry("980x650")
         self.minsize(900, 600)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
-
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
 
@@ -53,25 +50,18 @@ class ExpeditionAssistantApp(ctk.CTk):
             on_finished=self._threadsafe_finished,
         )
         self._hotkey_events: queue.SimpleQueue[str] = queue.SimpleQueue()
+        self.hotkeys = GlobalHotkeys(
+            callback=self._queue_hotkey,
+            on_error=lambda text: self._hotkey_events.put(f"error:{text}"),
+        )
 
         self._build_ui()
-        self._register_hotkeys()
+        self.hotkeys.start()
         self.after(50, self._poll_hotkeys)
         self.after(250, self._refresh_environment)
 
-    def _register_hotkeys(self) -> None:
-        keyboard.add_hotkey(
-            "f6",
-            lambda: self._hotkey_events.put("start"),
-            suppress=True,
-            trigger_on_release=True,
-        )
-        keyboard.add_hotkey(
-            "f8",
-            lambda: self._hotkey_events.put("stop"),
-            suppress=True,
-            trigger_on_release=True,
-        )
+    def _queue_hotkey(self, action: str) -> None:
+        self._hotkey_events.put(action)
 
     def _poll_hotkeys(self) -> None:
         while True:
@@ -79,12 +69,13 @@ class ExpeditionAssistantApp(ctk.CTk):
                 event = self._hotkey_events.get_nowait()
             except queue.Empty:
                 break
-
             if event == "start":
-                self._start_from_hotkey()
+                self._start()
             elif event == "stop":
                 self._emergency_stop()
-
+            elif event.startswith("error:"):
+                self._append_log(event.removeprefix("error:"))
+                self._set_status("Горячие клавиши не зарегистрированы", error=True)
         self.after(50, self._poll_hotkeys)
 
     def _build_ui(self) -> None:
@@ -95,50 +86,25 @@ class ExpeditionAssistantApp(ctk.CTk):
         header = ctk.CTkFrame(self, corner_radius=0, fg_color="#0d1c24")
         header.grid(row=0, column=0, columnspan=2, sticky="ew")
         header.grid_columnconfigure(0, weight=1)
-
-        ctk.CTkLabel(
-            header,
-            text="PALWORLD  •  ЭКСПЕДИЦИИ",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            text_color="#63d8ee",
-        ).grid(row=0, column=0, padx=28, pady=(18, 2), sticky="w")
-        ctk.CTkLabel(
-            header,
-            text="Expedition Assistant",
-            font=ctk.CTkFont(size=30, weight="bold"),
-        ).grid(row=1, column=0, padx=28, pady=(0, 18), sticky="w")
-
-        self.env_label = ctk.CTkLabel(
-            header,
-            text="Проверяю экран…",
-            font=ctk.CTkFont(size=12),
-            text_color="#a9bdc6",
-        )
+        ctk.CTkLabel(header, text="PALWORLD  •  ЭКСПЕДИЦИИ", font=ctk.CTkFont(size=13, weight="bold"), text_color="#63d8ee").grid(row=0, column=0, padx=28, pady=(18, 2), sticky="w")
+        ctk.CTkLabel(header, text="Expedition Assistant", font=ctk.CTkFont(size=30, weight="bold")).grid(row=1, column=0, padx=28, pady=(0, 18), sticky="w")
+        self.env_label = ctk.CTkLabel(header, text="Проверяю экран…", text_color="#a9bdc6")
         self.env_label.grid(row=0, column=1, rowspan=2, padx=28, sticky="e")
 
         left = ctk.CTkFrame(self, corner_radius=18, fg_color="#10252e")
         left.grid(row=1, column=0, padx=(22, 10), pady=20, sticky="nsew")
         left.grid_columnconfigure(0, weight=1)
         left.grid_rowconfigure(2, weight=1)
-
-        ctk.CTkLabel(left, text="Выбери экспедицию", font=ctk.CTkFont(size=20, weight="bold")).grid(
-            row=0, column=0, padx=22, pady=(22, 5), sticky="w"
-        )
-        ctk.CTkLabel(
-            left,
-            text="Настрой один раз, вернись в игру и запускай клавишей F6.",
-            text_color="#91a9b3",
-        ).grid(row=1, column=0, padx=22, pady=(0, 14), sticky="w")
-
-        expedition_box = ctk.CTkScrollableFrame(left, fg_color="transparent")
-        expedition_box.grid(row=2, column=0, padx=14, pady=(0, 12), sticky="nsew")
-        expedition_box.grid_columnconfigure(0, weight=1)
-
+        ctk.CTkLabel(left, text="Выбери экспедицию", font=ctk.CTkFont(size=20, weight="bold")).grid(row=0, column=0, padx=22, pady=(22, 5), sticky="w")
+        ctk.CTkLabel(left, text="Настрой один раз и запускай из игры клавишей F6.", text_color="#91a9b3").grid(row=1, column=0, padx=22, pady=(0, 14), sticky="w")
+        box = ctk.CTkScrollableFrame(left, fg_color="transparent")
+        box.grid(row=2, column=0, padx=14, pady=(0, 12), sticky="nsew")
+        box.grid_columnconfigure(0, weight=1)
         self.expedition_var = ctk.StringVar(value=EXPEDITIONS[0].key)
         for index, expedition in enumerate(EXPEDITIONS):
             enabled = expedition.enabled
             card = ctk.CTkRadioButton(
-                expedition_box,
+                box,
                 variable=self.expedition_var,
                 value=expedition.key,
                 text=f"{expedition.name}\n{expedition.duration}  •  {expedition.danger}",
@@ -155,150 +121,59 @@ class ExpeditionAssistantApp(ctk.CTk):
         right.grid(row=1, column=1, padx=(10, 22), pady=20, sticky="nsew")
         right.grid_columnconfigure(0, weight=1)
         right.grid_rowconfigure(7, weight=1)
-
-        ctk.CTkLabel(right, text="Параметры запуска", font=ctk.CTkFont(size=20, weight="bold")).grid(
-            row=0, column=0, padx=22, pady=(22, 15), sticky="w"
-        )
-
-        ctk.CTkLabel(right, text="Часовой пояс для прыжка", text_color="#9fb2ba").grid(
-            row=1, column=0, padx=22, sticky="w"
-        )
+        ctk.CTkLabel(right, text="Параметры запуска", font=ctk.CTkFont(size=20, weight="bold")).grid(row=0, column=0, padx=22, pady=(22, 15), sticky="w")
+        ctk.CTkLabel(right, text="Часовой пояс для прыжка", text_color="#9fb2ba").grid(row=1, column=0, padx=22, sticky="w")
         timezone_names = list(TIMEZONE_PRESETS)
         self.timezone_var = ctk.StringVar(value=timezone_names[0])
-        ctk.CTkOptionMenu(
-            right,
-            variable=self.timezone_var,
-            values=timezone_names,
-            height=38,
-        ).grid(row=2, column=0, padx=22, pady=(6, 14), sticky="ew")
-
-        controls = ctk.CTkFrame(right, fg_color="transparent")
-        controls.grid(row=3, column=0, padx=22, sticky="ew")
-        controls.grid_columnconfigure((0, 1), weight=1)
-
-        ctk.CTkLabel(controls, text="Повторений", text_color="#9fb2ba").grid(row=0, column=0, sticky="w")
-        ctk.CTkLabel(controls, text="Пауза после запуска", text_color="#9fb2ba").grid(
-            row=0, column=1, padx=(12, 0), sticky="w"
-        )
+        ctk.CTkOptionMenu(right, variable=self.timezone_var, values=timezone_names, height=38).grid(row=2, column=0, padx=22, pady=(6, 14), sticky="ew")
 
         self.cycles_var = ctk.StringVar(value="1")
-        ctk.CTkEntry(controls, textvariable=self.cycles_var, height=38).grid(
-            row=1, column=0, pady=(6, 14), sticky="ew"
-        )
-
-        self.delay_var = ctk.StringVar(value="3")
-        ctk.CTkEntry(controls, textvariable=self.delay_var, height=38).grid(
-            row=1, column=1, padx=(12, 0), pady=(6, 14), sticky="ew"
-        )
+        ctk.CTkLabel(right, text="Повторений", text_color="#9fb2ba").grid(row=3, column=0, padx=22, sticky="w")
+        ctk.CTkEntry(right, textvariable=self.cycles_var, height=38).grid(row=4, column=0, padx=22, pady=(6, 12), sticky="ew")
 
         hotkeys = ctk.CTkFrame(right, corner_radius=10, fg_color="#0b1b22")
-        hotkeys.grid(row=4, column=0, padx=22, pady=(2, 10), sticky="ew")
+        hotkeys.grid(row=5, column=0, padx=22, pady=(2, 10), sticky="ew")
         hotkeys.grid_columnconfigure((0, 1), weight=1)
-        ctk.CTkLabel(
-            hotkeys,
-            text="F6  Запустить из игры",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            text_color="#63d8ee",
-        ).grid(row=0, column=0, padx=12, pady=10, sticky="w")
-        ctk.CTkLabel(
-            hotkeys,
-            text="F8  Остановить",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            text_color="#ff8a98",
-        ).grid(row=0, column=1, padx=12, pady=10, sticky="e")
+        ctk.CTkLabel(hotkeys, text="F6  Запустить", font=ctk.CTkFont(size=13, weight="bold"), text_color="#63d8ee").grid(row=0, column=0, padx=12, pady=10, sticky="w")
+        ctk.CTkLabel(hotkeys, text="F8  Остановить", font=ctk.CTkFont(size=13, weight="bold"), text_color="#ff8a98").grid(row=0, column=1, padx=12, pady=10, sticky="e")
 
-        self.status_label = ctk.CTkLabel(
-            right,
-            text="Готова • F6 запускает из Palworld",
-            anchor="w",
-            corner_radius=10,
-            fg_color="#0b1b22",
-            text_color="#6fe1b6",
-            height=44,
-        )
-        self.status_label.grid(row=5, column=0, padx=22, pady=(2, 12), sticky="ew")
-
-        ctk.CTkLabel(right, text="Журнал", text_color="#9fb2ba").grid(row=6, column=0, padx=22, sticky="w")
-        self.log_box = ctk.CTkTextbox(
-            right,
-            corner_radius=10,
-            fg_color="#09171d",
-            text_color="#b9ced6",
-            font=ctk.CTkFont(family="Consolas", size=12),
-        )
+        self.status_label = ctk.CTkLabel(right, text="Готова • F6 работает глобально", anchor="w", corner_radius=10, fg_color="#0b1b22", text_color="#6fe1b6", height=44)
+        self.status_label.grid(row=6, column=0, padx=22, pady=(2, 12), sticky="ew")
+        self.log_box = ctk.CTkTextbox(right, corner_radius=10, fg_color="#09171d", text_color="#b9ced6", font=ctk.CTkFont(family="Consolas", size=12))
         self.log_box.grid(row=7, column=0, padx=22, pady=(6, 12), sticky="nsew")
-        self.log_box.insert(
-            "end",
-            "Оставь программу запущенной, вернись в Palworld и нажми F6 перед Центром экспедиций.\n",
-        )
+        self.log_box.insert("end", "Оставь программу запущенной, встань перед Центром экспедиций и нажми F6.\n")
         self.log_box.configure(state="disabled")
 
         buttons = ctk.CTkFrame(right, fg_color="transparent")
         buttons.grid(row=8, column=0, padx=22, pady=(0, 22), sticky="ew")
         buttons.grid_columnconfigure((0, 1), weight=1)
-
-        self.start_button = ctk.CTkButton(
-            buttons,
-            text="▶  Запустить сейчас",
-            height=46,
-            font=ctk.CTkFont(size=15, weight="bold"),
-            command=self._start,
-        )
+        self.start_button = ctk.CTkButton(buttons, text="▶  Запустить сейчас", height=46, font=ctk.CTkFont(size=15, weight="bold"), command=self._start)
         self.start_button.grid(row=0, column=0, padx=(0, 6), sticky="ew")
-
-        self.stop_button = ctk.CTkButton(
-            buttons,
-            text="■  Остановить (F8)",
-            height=46,
-            fg_color="#8d3441",
-            hover_color="#a74150",
-            state="disabled",
-            command=self._stop,
-        )
+        self.stop_button = ctk.CTkButton(buttons, text="■  Остановить (F8)", height=46, fg_color="#8d3441", hover_color="#a74150", state="disabled", command=self._stop)
         self.stop_button.grid(row=0, column=1, padx=(6, 0), sticky="ew")
 
     def _refresh_environment(self) -> None:
-        width = self.winfo_screenwidth()
-        height = self.winfo_screenheight()
+        width, height = self.winfo_screenwidth(), self.winfo_screenheight()
         try:
             dpi = ctypes.windll.user32.GetDpiForSystem()
         except Exception:
             dpi = 96
         scale = round(dpi / 96 * 100)
         ok = width == 1920 and height == 1080 and scale == 100
-        self.env_label.configure(
-            text=f"{'✓' if ok else '⚠'}  {width}×{height}  •  масштаб {scale}%",
-            text_color="#6fe1b6" if ok else "#ffbd69",
-        )
-
-    def _start_from_hotkey(self) -> None:
-        if self.controller.running:
-            return
-        if not is_game_foreground(PALWORLD_WINDOW_TITLE):
-            self._append_log("F6 проигнорирован: сейчас активно не окно Palworld.")
-            self._set_status("Сначала вернись в Palworld", error=True)
-            return
-        self._start()
+        self.env_label.configure(text=f"{'✓' if ok else '⚠'}  {width}×{height}  •  {scale}%", text_color="#6fe1b6" if ok else "#ffbd69")
 
     def _start(self) -> None:
         if self.controller.running:
             return
         try:
             cycles = int(self.cycles_var.get())
-            delay = float(self.delay_var.get().replace(",", "."))
-            if not 1 <= cycles <= 999 or not 1 <= delay <= 30:
+            if not 1 <= cycles <= 999:
                 raise ValueError
         except ValueError:
-            self._set_status("Проверь повторения и паузу", error=True)
+            self._set_status("Проверь число повторений", error=True)
             return
-
         expedition = next(item for item in EXPEDITIONS if item.key == self.expedition_var.get())
-        settings = AutomationSettings(
-            expedition=expedition,
-            target_timezone_id=TIMEZONE_PRESETS[self.timezone_var.get()],
-            cycles=cycles,
-            post_start_delay=delay,
-        )
+        settings = AutomationSettings(expedition, TIMEZONE_PRESETS[self.timezone_var.get()], cycles)
         self.start_button.configure(state="disabled")
         self.stop_button.configure(state="normal")
         self._append_log("—" * 42)
@@ -306,7 +181,7 @@ class ExpeditionAssistantApp(ctk.CTk):
 
     def _stop(self) -> None:
         self.controller.stop()
-        self._set_status("Останавливаю после текущего безопасного шага…")
+        self._set_status("Останавливаю…")
 
     def _emergency_stop(self) -> None:
         self.controller.stop()
@@ -337,7 +212,7 @@ class ExpeditionAssistantApp(ctk.CTk):
 
     def _on_close(self) -> None:
         self.controller.stop()
-        keyboard.unhook_all_hotkeys()
+        self.hotkeys.stop()
         self.destroy()
 
 
