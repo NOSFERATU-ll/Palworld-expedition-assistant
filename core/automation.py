@@ -6,15 +6,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable
 
-import pyautogui
-
-from core.config import COORDS, EXPECTED_RESOLUTION, PALWORLD_WINDOW_TITLE, Expedition
-from core.game_input import release_key, tap_key
-from core.timezone import get_current_timezone, set_timezone
-from core.window import client_point_to_screen, focus_window
-
-pyautogui.FAILSAFE = True
-pyautogui.PAUSE = 0.12
+from core.config import EXPECTED_RESOLUTION, PALWORLD_WINDOW_TITLE, Expedition
+from core.game_input import click_screen, release_key, tap_key
+from core.timezone import get_current_timezone, local_clock_text, set_timezone
+from core.vision import VisionError, locate, wait_for, wait_until_gone
+from core.window import focus_window, get_client_screen_rect, refresh_game_focus
 
 StatusCallback = Callable[[str], None]
 LogCallback = Callable[[str], None]
@@ -26,7 +22,6 @@ class AutomationSettings:
     expedition: Expedition
     target_timezone_id: str
     cycles: int = 1
-    post_start_delay: float = 3.0
 
 
 class AutomationStopped(RuntimeError):
@@ -34,12 +29,7 @@ class AutomationStopped(RuntimeError):
 
 
 class AutomationController:
-    def __init__(
-        self,
-        on_status: StatusCallback,
-        on_log: LogCallback,
-        on_finished: FinishedCallback,
-    ) -> None:
+    def __init__(self, on_status: StatusCallback, on_log: LogCallback, on_finished: FinishedCallback) -> None:
         self.on_status = on_status
         self.on_log = on_log
         self.on_finished = on_finished
@@ -54,12 +44,7 @@ class AutomationController:
         if self.running:
             return
         self._stop_event.clear()
-        self._thread = threading.Thread(
-            target=self._run,
-            args=(settings,),
-            daemon=True,
-            name="expedition-automation",
-        )
+        self._thread = threading.Thread(target=self._run, args=(settings,), daemon=True, name="expedition-automation")
         self._thread.start()
 
     def stop(self) -> None:
@@ -81,82 +66,115 @@ class AutomationController:
             time.sleep(min(0.1, deadline - time.monotonic()))
 
     def _log(self, text: str) -> None:
-        stamp = datetime.now().strftime("%H:%M:%S")
-        self.on_log(f"[{stamp}] {text}")
+        self.on_log(f"[{datetime.now():%H:%M:%S}] {text}")
 
     def _status(self, text: str) -> None:
         self.on_status(text)
         self._log(text)
 
-    def _validate_environment(self) -> None:
-        size = pyautogui.size()
-        if (size.width, size.height) != EXPECTED_RESOLUTION:
+    def _validate_game_size(self, hwnd: int) -> None:
+        left, top, right, bottom = get_client_screen_rect(hwnd)
+        size = (right - left, bottom - top)
+        if size != EXPECTED_RESOLUTION:
             raise RuntimeError(
-                f"Нужен экран {EXPECTED_RESOLUTION[0]}×{EXPECTED_RESOLUTION[1]}, "
-                f"сейчас {size.width}×{size.height}."
+                f"Клиент Palworld должен быть {EXPECTED_RESOLUTION[0]}×{EXPECTED_RESOLUTION[1]}, сейчас {size[0]}×{size[1]}."
             )
 
-    def _click(self, hwnd: int, point: tuple[int, int], duration: float = 0.18) -> None:
-        self._check_stop()
-        screen_point = client_point_to_screen(hwnd, point)
-        pyautogui.moveTo(*screen_point, duration=duration)
-        pyautogui.click()
+    def _click_match(self, match_name: str, hwnd: int, timeout: float = 8.0) -> None:
+        match = wait_for(hwnd, match_name, timeout)
+        self._log(f"Нашла {match_name}: совпадение {match.score:.3f}, точка {match.center}.")
+        click_screen(*match.center)
+
+    def _open_menu(self, hwnd: int) -> None:
+        if locate(hwnd, "menu_header") is not None:
+            return
+        for attempt in range(1, 4):
+            self._status(f"Открываю Центр экспедиций — попытка {attempt}/3")
+            focus_window(PALWORLD_WINDOW_TITLE)
+            tap_key("f")
+            try:
+                wait_for(hwnd, "menu_header", 3.0)
+                return
+            except VisionError:
+                self._sleep(0.4)
+        raise VisionError("Центр экспедиций не открылся после трёх нажатий F.")
+
+    def _jump_time(self, hwnd: int, target_timezone: str, original_timezone: str) -> None:
+        self._status(f"Ставлю часовой пояс {target_timezone}")
+        before = local_clock_text()
+        set_timezone(target_timezone)
+        after = local_clock_text()
+        self._log(f"Проверка Windows: {before} → {after}; активный пояс: {get_current_timezone()}")
+        refresh_game_focus(hwnd)
+        self._sleep(2.0)
+
+        self._status(f"Возвращаю часовой пояс {original_timezone}")
+        before_restore = local_clock_text()
+        set_timezone(original_timezone)
+        after_restore = local_clock_text()
+        self._log(
+            f"Проверка возврата: {before_restore} → {after_restore}; активный пояс: {get_current_timezone()}"
+        )
+        refresh_game_focus(hwnd)
+        self._sleep(2.0)
+
+    def _collect_reward(self, hwnd: int) -> None:
+        self._status("Жду статус «Завершено»")
+        try:
+            wait_for(hwnd, "completed", 12.0)
+        except VisionError:
+            self._log("Статус не появился сразу — делаю ещё один цикл фокуса игры.")
+            refresh_game_focus(hwnd)
+            wait_for(hwnd, "completed", 10.0)
+
+        self._status("Открываю награду")
+        tap_key("f")
+        wait_for(hwnd, "reward_header", 5.0)
+        wait_for(hwnd, "take_all", 3.0)
+        self._status("Забираю всё")
+        tap_key("x")
+        self._sleep(1.2)
+        tap_key("f")
+        self._sleep(1.0)
 
     def _run(self, settings: AutomationSettings) -> None:
         original_timezone: str | None = None
         success = False
         final_message = "Готово"
         try:
-            self._validate_environment()
+            hwnd = focus_window(PALWORLD_WINDOW_TITLE)
+            self._validate_game_size(hwnd)
             original_timezone = get_current_timezone()
-            self._log(f"Исходный часовой пояс: {original_timezone}")
-            self._log("F6 — запуск из игры, F8 — аварийная остановка.")
-            self._log("Часовой пояс меняется скрыто через Windows; Alt+Tab не нужен.")
+            self._log(f"Исходный пояс: {original_timezone}; локальное время: {local_clock_text()}")
+            self._log("Наведение теперь выполняется распознаванием интерфейса, а не координатами.")
 
             for cycle in range(1, settings.cycles + 1):
                 self._check_stop()
-                self._status(f"Цикл {cycle}/{settings.cycles}: открываю экспедиции")
+                self._status(f"Цикл {cycle}/{settings.cycles}")
                 hwnd = focus_window(PALWORLD_WINDOW_TITLE)
-                tap_key("f", hold_seconds=0.075)
-                self._sleep(1.8)
+                self._open_menu(hwnd)
 
-                self._status(f"Выбираю: {settings.expedition.name}")
-                self._click(hwnd, settings.expedition.list_click)
-                self._sleep(1.8)
+                self._status(f"Выбираю «{settings.expedition.name}»")
+                self._click_match(settings.expedition.template_name, hwnd)
+                self._sleep(1.0)
 
                 self._status("Нажимаю «Авто»")
-                self._click(hwnd, COORDS.auto_button)
-                self._sleep(2.4)
+                self._click_match("auto_button", hwnd)
+                self._sleep(1.4)
 
-                self._status("Запускаю экспедицию")
-                self._click(hwnd, COORDS.start_button)
-                self._sleep(settings.post_start_delay)
+                self._status("Нажимаю «Начать»")
+                self._click_match("start_button", hwnd)
+                wait_until_gone(hwnd, "menu_header", 5.0)
+                self._sleep(1.0)
 
-                self._status("Переключаю часовой пояс вперёд")
-                set_timezone(settings.target_timezone_id)
-                self._sleep(2.5)
-
-                self._status("Возвращаю исходный часовой пояс")
-                set_timezone(original_timezone)
-                self._sleep(4.5)
-
-                self._status("Забираю награду")
-                hwnd = focus_window(PALWORLD_WINDOW_TITLE)
-                self._sleep(0.8)
-                tap_key("x", hold_seconds=0.075)
-                self._sleep(1.8)
-                self._click(hwnd, COORDS.reward_close_button)
-                self._sleep(1.5)
-
+                self._jump_time(hwnd, settings.target_timezone_id, original_timezone)
+                self._collect_reward(hwnd)
                 self._log(f"Цикл {cycle} завершён.")
 
             success = True
             final_message = f"Готово: выполнено циклов — {settings.cycles}"
         except AutomationStopped as exc:
             final_message = str(exc)
-            self._log(final_message)
-        except pyautogui.FailSafeException:
-            final_message = "Остановлено защитой PyAutoGUI: курсор оказался в углу экрана."
             self._log(final_message)
         except Exception as exc:
             final_message = f"Ошибка: {exc}"
@@ -167,13 +185,11 @@ class AutomationController:
                     release_key(key)
                 except Exception:
                     pass
-
             if original_timezone:
                 try:
-                    current = get_current_timezone()
-                    if current != original_timezone:
+                    if get_current_timezone().casefold() != original_timezone.casefold():
                         set_timezone(original_timezone)
-                        self._log("Исходный часовой пояс восстановлен.")
+                        self._log("Исходный часовой пояс восстановлен аварийно.")
                 except Exception as exc:
                     self._log(f"ВАЖНО: не удалось восстановить часовой пояс: {exc}")
             self.on_finished(success, final_message)
