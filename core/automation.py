@@ -9,7 +9,7 @@ from typing import Callable
 import pyautogui
 
 from core.config import COORDS, EXPECTED_RESOLUTION, PALWORLD_WINDOW_TITLE, Expedition
-from core.input import release_key, tap_key
+from core.game_input import release_key, tap_key
 from core.timezone import get_current_timezone, set_timezone
 from core.window import client_point_to_screen, focus_window
 
@@ -64,7 +64,6 @@ class AutomationController:
 
     def stop(self) -> None:
         self._stop_event.set()
-        # На всякий случай сразу снимаем клавиши, если остановка пришлась на ввод.
         for key in ("f", "x"):
             try:
                 release_key(key)
