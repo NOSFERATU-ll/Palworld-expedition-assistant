@@ -1,0 +1,74 @@
+name: Build Windows release
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+concurrency:
+  group: windows-release
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller==6.21.0
+          python -m pip check
+
+      - name: Validate source
+        shell: pwsh
+        run: |
+          python -m compileall -q -f app.py core
+          python -c "import app; import core.automation; import core.config as c; import core.i18n as i; import core.timezone as tz; assert c.APP_VERSION == '0.5.1'; assert i.tr('ru','parameters') == 'Параметры'; assert i.tr('en','parameters') == 'Settings'; resolved=tz.resolve_timezone_for_jump(120); assert resolved.target_offset_minutes-resolved.current_offset_minutes == 120; print('Validation passed')"
+
+      - name: Build executable
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --uac-admin --noupx --collect-all customtkinter --name PalworldExpeditionAssistant-v0.5.1 app.py
+          $exe = "dist/PalworldExpeditionAssistant-v0.5.1.exe"
+          if (-not (Test-Path $exe)) { throw "EXE was not created" }
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
+          "$hash  PalworldExpeditionAssistant-v0.5.1.exe" | Set-Content "dist/PalworldExpeditionAssistant-v0.5.1.sha256" -Encoding ascii
+
+      - name: Publish release
+        if: github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete v0.5.1 --yes --cleanup-tag 2>$null
+          $global:LASTEXITCODE = 0
+          git tag -d v0.5.1 2>$null
+          $global:LASTEXITCODE = 0
+          git push origin :refs/tags/v0.5.1 2>$null
+          $global:LASTEXITCODE = 0
+          git tag v0.5.1
+          git push origin v0.5.1
+          gh release create v0.5.1 `
+            "dist/PalworldExpeditionAssistant-v0.5.1.exe#PalworldExpeditionAssistant-v0.5.1.exe" `
+            "dist/PalworldExpeditionAssistant-v0.5.1.sha256#PalworldExpeditionAssistant-v0.5.1.sha256" `
+            --latest `
+            --title "Palworld Expedition Assistant v0.5.1" `
+            --notes "Initial public release. Windows utility for automating Palworld expeditions. Includes Russian and English interfaces, relative time-zone jumps, F6/F8 hotkeys, and SHA-256 verification."
