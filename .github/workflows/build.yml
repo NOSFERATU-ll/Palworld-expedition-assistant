@@ -49,6 +49,19 @@ jobs:
           if (-not (Test-Path "dist/PalworldExpeditionAssistant.exe")) { throw "EXE was not created" }
           Get-Item "dist/PalworldExpeditionAssistant.exe" | Format-List Name,Length,FullName
 
+      - name: Test release publishing
+        if: github.event_name == 'pull_request' && github.head_ref == 'ci-release-verify'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "ci-release-${{ github.run_id }}"
+          git tag $tag
+          git push origin "refs/tags/$tag"
+          gh release create $tag "dist/PalworldExpeditionAssistant.exe#PalworldExpeditionAssistant.exe" --title "CI release test" --notes "Temporary release publishing test."
+          gh release view $tag --json tagName,assets
+          gh release delete $tag --yes --cleanup-tag
+
       - name: Publish latest Windows build
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         shell: pwsh
