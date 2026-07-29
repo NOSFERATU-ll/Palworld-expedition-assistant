@@ -5,6 +5,8 @@ import time
 import win32con
 import win32gui
 
+from core.config import EXPECTED_RESOLUTION
+
 
 class GameWindowError(RuntimeError):
     pass
@@ -29,8 +31,6 @@ def find_window(title_fragment: str) -> int:
     if exact_matches:
         return exact_matches[0]
     if partial_matches:
-        # У самой игры обычно самое короткое название. Это не даёт выбрать окно Steam
-        # с названием вроде «Palworld — Steam» раньше игрового окна.
         partial_matches.sort(key=lambda item: len(item[1]))
         return partial_matches[0][0]
     raise GameWindowError(f"Окно с названием «{title_fragment}» не найдено.")
@@ -42,10 +42,49 @@ def focus_window(title_fragment: str) -> int:
         win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
     else:
         win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
+
     win32gui.BringWindowToTop(hwnd)
     try:
         win32gui.SetForegroundWindow(hwnd)
     except Exception:
         pass
-    time.sleep(0.8)
+
+    deadline = time.monotonic() + 1.5
+    while time.monotonic() < deadline:
+        if win32gui.GetForegroundWindow() == hwnd:
+            break
+        time.sleep(0.05)
+    time.sleep(0.25)
     return hwnd
+
+
+def is_game_foreground(title_fragment: str) -> bool:
+    hwnd = win32gui.GetForegroundWindow()
+    if not hwnd:
+        return False
+    title = win32gui.GetWindowText(hwnd).strip().casefold()
+    return title_fragment.strip().casefold() in title
+
+
+def client_point_to_screen(
+    hwnd: int,
+    design_point: tuple[int, int],
+    design_size: tuple[int, int] = EXPECTED_RESOLUTION,
+) -> tuple[int, int]:
+    """Переводит координату макета 1920×1080 в координату окна Palworld.
+
+    Координаты больше не привязаны к левому верхнему углу монитора: они
+    масштабируются относительно клиентской области найденного окна игры.
+    """
+
+    left, top, right, bottom = win32gui.GetClientRect(hwnd)
+    width = right - left
+    height = bottom - top
+    if width <= 0 or height <= 0:
+        raise GameWindowError("Не удалось определить размер окна Palworld.")
+
+    origin_x, origin_y = win32gui.ClientToScreen(hwnd, (0, 0))
+    design_width, design_height = design_size
+    x = origin_x + round(design_point[0] * width / design_width)
+    y = origin_y + round(design_point[1] * height / design_height)
+    return x, y
