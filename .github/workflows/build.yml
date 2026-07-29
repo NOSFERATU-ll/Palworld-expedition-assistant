@@ -1,0 +1,59 @@
+name: Build Windows EXE
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+          python -m pip check
+
+      - name: Compile check
+        shell: pwsh
+        run: |
+          python -m compileall -q -f app.py core
+
+      - name: Import smoke test
+        shell: pwsh
+        run: |
+          python -c "import app; import core.automation; import core.game_input; import core.timezone; import core.window; print('Imports OK')"
+
+      - name: Build EXE
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --uac-admin --noupx --collect-all customtkinter --name PalworldExpeditionAssistant app.py
+          if (-not (Test-Path "dist/PalworldExpeditionAssistant.exe")) { throw "EXE was not created" }
+          Get-Item "dist/PalworldExpeditionAssistant.exe" | Format-List Name,Length,FullName
+
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: PalworldExpeditionAssistant-windows
+          path: dist/PalworldExpeditionAssistant.exe
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 9
