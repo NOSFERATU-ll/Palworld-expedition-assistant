@@ -9,8 +9,9 @@ from typing import Callable
 import pyautogui
 
 from core.config import COORDS, EXPECTED_RESOLUTION, PALWORLD_WINDOW_TITLE, Expedition
+from core.input import release_key, tap_key
 from core.timezone import get_current_timezone, set_timezone
-from core.window import focus_window
+from core.window import client_point_to_screen, focus_window
 
 pyautogui.FAILSAFE = True
 pyautogui.PAUSE = 0.12
@@ -63,6 +64,12 @@ class AutomationController:
 
     def stop(self) -> None:
         self._stop_event.set()
+        # На всякий случай сразу снимаем клавиши, если остановка пришлась на ввод.
+        for key in ("f", "x"):
+            try:
+                release_key(key)
+            except Exception:
+                pass
 
     def _check_stop(self) -> None:
         if self._stop_event.is_set():
@@ -90,9 +97,10 @@ class AutomationController:
                 f"сейчас {size.width}×{size.height}."
             )
 
-    def _click(self, point: tuple[int, int], duration: float = 0.18) -> None:
+    def _click(self, hwnd: int, point: tuple[int, int], duration: float = 0.18) -> None:
         self._check_stop()
-        pyautogui.moveTo(*point, duration=duration)
+        screen_point = client_point_to_screen(hwnd, point)
+        pyautogui.moveTo(*screen_point, duration=duration)
         pyautogui.click()
 
     def _run(self, settings: AutomationSettings) -> None:
@@ -103,25 +111,26 @@ class AutomationController:
             self._validate_environment()
             original_timezone = get_current_timezone()
             self._log(f"Исходный часовой пояс: {original_timezone}")
-            self._log("F8 — аварийная остановка. Угол экрана — защита PyAutoGUI.")
+            self._log("F6 — запуск из игры, F8 — аварийная остановка.")
+            self._log("Часовой пояс меняется скрыто через Windows; Alt+Tab не нужен.")
 
             for cycle in range(1, settings.cycles + 1):
                 self._check_stop()
                 self._status(f"Цикл {cycle}/{settings.cycles}: открываю экспедиции")
-                focus_window(PALWORLD_WINDOW_TITLE)
-                pyautogui.press("f")
-                self._sleep(1.7)
+                hwnd = focus_window(PALWORLD_WINDOW_TITLE)
+                tap_key("f", hold_seconds=0.075)
+                self._sleep(1.8)
 
                 self._status(f"Выбираю: {settings.expedition.name}")
-                self._click(settings.expedition.list_click)
+                self._click(hwnd, settings.expedition.list_click)
                 self._sleep(1.8)
 
                 self._status("Нажимаю «Авто»")
-                self._click(COORDS.auto_button)
+                self._click(hwnd, COORDS.auto_button)
                 self._sleep(2.4)
 
                 self._status("Запускаю экспедицию")
-                self._click(COORDS.start_button)
+                self._click(hwnd, COORDS.start_button)
                 self._sleep(settings.post_start_delay)
 
                 self._status("Переключаю часовой пояс вперёд")
@@ -133,11 +142,11 @@ class AutomationController:
                 self._sleep(4.5)
 
                 self._status("Забираю награду")
-                focus_window(PALWORLD_WINDOW_TITLE)
-                self._sleep(2.0)
-                pyautogui.press("x")
+                hwnd = focus_window(PALWORLD_WINDOW_TITLE)
+                self._sleep(0.8)
+                tap_key("x", hold_seconds=0.075)
                 self._sleep(1.8)
-                self._click(COORDS.reward_close_button)
+                self._click(hwnd, COORDS.reward_close_button)
                 self._sleep(1.5)
 
                 self._log(f"Цикл {cycle} завершён.")
@@ -154,6 +163,12 @@ class AutomationController:
             final_message = f"Ошибка: {exc}"
             self._log(final_message)
         finally:
+            for key in ("f", "x"):
+                try:
+                    release_key(key)
+                except Exception:
+                    pass
+
             if original_timezone:
                 try:
                     current = get_current_timezone()
