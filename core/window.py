@@ -52,10 +52,11 @@ def focus_window(title_fragment: str) -> int:
     deadline = time.monotonic() + 1.5
     while time.monotonic() < deadline:
         if win32gui.GetForegroundWindow() == hwnd:
-            break
+            time.sleep(0.25)
+            return hwnd
         time.sleep(0.05)
-    time.sleep(0.25)
-    return hwnd
+
+    raise GameWindowError("Не удалось передать фокус окну Palworld — ввод отменён.")
 
 
 def is_game_foreground(title_fragment: str) -> bool:
@@ -63,7 +64,7 @@ def is_game_foreground(title_fragment: str) -> bool:
     if not hwnd:
         return False
     title = win32gui.GetWindowText(hwnd).strip().casefold()
-    return title_fragment.strip().casefold() in title
+    return title == title_fragment.strip().casefold()
 
 
 def client_point_to_screen(
