@@ -11,19 +11,29 @@ class GameWindowError(RuntimeError):
 
 
 def find_window(title_fragment: str) -> int:
-    matches: list[int] = []
+    exact_matches: list[int] = []
+    partial_matches: list[tuple[int, str]] = []
+    wanted = title_fragment.strip().casefold()
 
     def callback(hwnd: int, _extra: object) -> None:
         if not win32gui.IsWindowVisible(hwnd):
             return
-        title = win32gui.GetWindowText(hwnd)
-        if title_fragment.casefold() in title.casefold():
-            matches.append(hwnd)
+        title = win32gui.GetWindowText(hwnd).strip()
+        folded = title.casefold()
+        if folded == wanted:
+            exact_matches.append(hwnd)
+        elif wanted in folded:
+            partial_matches.append((hwnd, title))
 
     win32gui.EnumWindows(callback, None)
-    if not matches:
-        raise GameWindowError(f"Окно с названием «{title_fragment}» не найдено.")
-    return matches[0]
+    if exact_matches:
+        return exact_matches[0]
+    if partial_matches:
+        # У самой игры обычно самое короткое название. Это не даёт выбрать окно Steam
+        # с названием вроде «Palworld — Steam» раньше игрового окна.
+        partial_matches.sort(key=lambda item: len(item[1]))
+        return partial_matches[0][0]
+    raise GameWindowError(f"Окно с названием «{title_fragment}» не найдено.")
 
 
 def focus_window(title_fragment: str) -> int:
