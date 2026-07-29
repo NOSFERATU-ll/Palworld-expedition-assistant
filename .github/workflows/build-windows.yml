@@ -21,9 +21,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
 
+      - name: Compile check
+        run: |
+          python -m compileall app.py core
+
       - name: Build
         run: |
-          pyinstaller --noconfirm --clean --onefile --windowed --uac-admin --name PalworldExpeditionAssistant app.py
+          pyinstaller --noconfirm --clean --onefile --windowed --uac-admin --collect-all customtkinter --name PalworldExpeditionAssistant app.py
 
       - name: Upload EXE
         uses: actions/upload-artifact@v4
