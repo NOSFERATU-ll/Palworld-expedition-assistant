@@ -8,7 +8,7 @@ on:
     branches: [main]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -49,11 +49,21 @@ jobs:
           if (-not (Test-Path "dist/PalworldExpeditionAssistant.exe")) { throw "EXE was not created" }
           Get-Item "dist/PalworldExpeditionAssistant.exe" | Format-List Name,Length,FullName
 
-      - name: Upload EXE
-        uses: actions/upload-artifact@v4
-        with:
-          name: PalworldExpeditionAssistant-windows
-          path: dist/PalworldExpeditionAssistant.exe
-          if-no-files-found: error
-          retention-days: 3
-          compression-level: 9
+      - name: Publish latest Windows build
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --yes --cleanup-tag 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "No previous latest release to delete."
+            $global:LASTEXITCODE = 0
+          }
+
+          git tag -f latest
+          git push origin refs/tags/latest --force
+
+          gh release create latest "dist/PalworldExpeditionAssistant.exe#PalworldExpeditionAssistant.exe" `
+            --title "Latest Windows Build" `
+            --notes "Automatic Windows build from the latest main branch."
