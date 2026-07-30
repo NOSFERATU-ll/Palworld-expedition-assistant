@@ -41,7 +41,7 @@ Press **F8** at any time to request an emergency stop.
 
 ## Time-zone jumps
 
-The program does not assume that the user lives in Prague, Kyiv, Moscow, or any other specific city. Instead, it calculates a destination time zone relative to the user's current Windows zone.
+Instead, it calculates a destination time zone relative to the user's current Windows zone.
 
 For example, selecting `+2 hours` finds an installed Windows time zone that is currently two hours ahead, including daylight-saving-time differences, and restores the original zone after the expedition cycle.
 
@@ -112,7 +112,7 @@ This is an unofficial fan-made utility and is not affiliated with or endorsed by
 
 ## Как работают часовые пояса
 
-Программа не предполагает, что пользователь живёт в Праге, Киеве, Москве или другом конкретном городе. Она рассчитывает целевой пояс относительно текущего часового пояса Windows.
+Она рассчитывает целевой пояс относительно текущего часового пояса Windows.
 
 Например, при выборе `+2 часа` программа найдёт установленный в Windows пояс, который в данный момент находится на два часа впереди с учётом летнего времени, а после завершения цикла вернёт исходный пояс.
 
